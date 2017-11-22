@@ -1,0 +1,223 @@
+/*
+ * mm-naive.c - The least memory-efficient malloc package.
+ * 
+ * In this naive approach, a block is allocated by allocating a
+ * new page as needed.  A block is pure payload. There are no headers or
+ * footers.  Blocks are never coalesced or reused.
+ *
+ * The heap check and free check always succeeds, because the
+ * allocator doesn't depend on any of the old data.
+ *
+ * NOTE TO STUDENTS: Replace this header comment with your own header
+ * comment that gives a high level description of your solution.
+ */
+
+/////////////////////  Current Version ////////////////////////
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <assert.h>
+#include <unistd.h>
+#include <string.h>
+
+#include "mm.h"
+#include "memlib.h"
+
+//#define DEBUG_1 1
+
+#ifdef DEBUG_1
+# define DEBUG_PRINT1(x) printf x
+#else
+# define DEBUG_PRINT1(x) do {} while (0)
+#endif
+
+//#define DEBUG_2
+#ifdef DEBUG_2
+# define DEBUG_PRINT2(x) fprintf x
+#else
+# define DEBUG_PRINT2(x) do {} while (0)
+#endif
+
+// My structures
+
+typedef struct {
+ size_t size;
+ char allocated;
+} block_header;
+
+//typedef struct chunk_header chunk_header;
+
+typedef struct{
+    size_t chunk_size;
+    char chunk_allocated;
+    //chunk_hdr* next_chunk;
+}chunk_header;
+
+typedef struct{
+    size_t chunk_size;
+    char chunk_allocated;
+    //chunk_hdr* next_chunk;
+}chunk_footer;
+
+/* always use 16-byte alignment */
+#define ALIGNMENT 16
+
+/* rounds up to the nearest multiple of ALIGNMENT */
+#define ALIGN(size) (((size) + (ALIGNMENT-1)) & ~(ALIGNMENT-1))
+
+/* rounds up to the nearest multiple of mem_pagesize() */
+#define PAGE_ALIGN(size) (((size) + (mem_pagesize()-1)) & ~(mem_pagesize()-1))
+
+
+// MY DECLARATIONS
+#define CHUNK_SIZE (1 << 14)
+#define CHUNK_ALIGN(size) (((size)+(CHUNK_SIZE-1)) & ~(CHUNK_SIZE-1))
+#define GET_CHUNK_SIZE(p) (((chunk_header *)(p))->chunk_size)
+#define GET_CHUNK_ALLOC(p) (((chunk_header *)(p))->chunk_allocated)
+#define CHUNK_OVERHEAD (sizeof(chunk_header) * 3)
+#define GET_SIZE(p) ((block_header *)(p))->size
+#define GET_ALLOC(p) ((block_header *)(p))->allocated
+#define BYT_TO_BLK(bytes) (bytes >> 1)
+#define BLK_TO_BYT(blks) (blks << 1)
+#define SZ_OF_BLKS (sizeof(block_header))
+
+#define HDRP(bp) ((char *)(bp) - sizeof(block_header))
+#define NEXT_BLKP(bp) ((char *)(bp) + GET_SIZE(HDRP(bp)))
+#define OVERHEAD (sizeof(block_header) * 2)
+
+static void extend(size_t new_size);
+static void set_allocated(void *bp, size_t size);
+static int check_aligned(void* bp, void* other);
+
+
+void *current_avail = NULL;
+int current_avail_size = 0;
+void *first_bp;
+/* 
+ * mm_init - initialize the malloc package.
+ */
+int mm_init() {
+        // sbrk(sizeof(block_header));
+         // first_bp = sbrk(0);
+        
+        
+         size_t initial_num_pages = 4;                              
+         size_t num_aligned_pages_in_bytes = PAGE_ALIGN(initial_num_pages);  
+         size_t num_bytes = num_aligned_pages_in_bytes;    
+         size_t num_blocks = num_bytes >> 1;                        
+        
+        // Set prolog chunk hdr, two chunk hdrs
+         chunk_header* first_chunk = mem_map(num_aligned_pages_in_bytes);    
+         int fc_off = first_chunk - first_chunk;
+         GET_CHUNK_SIZE(first_chunk) = 2;                           
+         GET_CHUNK_ALLOC(first_chunk) = 1;                          
+         chunk_footer* prolog_chunk_ftr = ((char*)first_chunk + (sizeof(chunk_header))); 
+         unsigned long cftr_off = (void*)prolog_chunk_ftr - (void*)first_chunk;
+         
+         // set end of chunk
+         chunk_footer* end_of_chunk = (((char*) first_chunk) +  num_bytes - sizeof(chunk_footer));
+         GET_CHUNK_ALLOC(end_of_chunk) = 1;
+         GET_CHUNK_SIZE(end_of_chunk) = 0; 
+         unsigned long end_of_chunk_off = (void*)end_of_chunk - (void*)first_chunk;
+
+
+         block_header* first_block_hdr = ((char*)prolog_chunk_ftr + (sizeof(chunk_footer))); 
+         GET_ALLOC(first_block_hdr) = 1;
+         unsigned long f_blk_hdr_off = (void*)first_block_hdr - (void*)first_chunk;
+
+         size_t first_block_size_bytes = num_bytes - (CHUNK_OVERHEAD);
+         size_t first_block_size_blks = BYT_TO_BLK(first_block_size_bytes);
+         GET_SIZE(first_block_hdr) = first_block_size_blks;
+        
+         unsigned long size_of_block = GET_SIZE(first_block_hdr);
+         unsigned long first_blk_ftr_offset_est = f_blk_hdr_off + (  size_of_block) - SZ_OF_BLKS;
+         void* f_blk_ftr_ptr = HDRP(NEXT_BLKP(first_block_hdr));
+         block_header* first_block_ftr = HDRP(NEXT_BLKP(first_block_hdr));
+         unsigned long f_blk_ftr_off = (void*)first_block_ftr - (void*)first_chunk;                  
+         GET_SIZE(HDRP(first_block_ftr)) = GET_SIZE(first_block_hdr);
+         GET_ALLOC(HDRP(first_block_ftr)) = 1;
+
+         first_bp = ((void*)first_block_hdr + sizeof(block_header));
+         unsigned long bp_off = (void*)first_bp - (void*)first_chunk;
+
+         if(!  (  check_aligned((void*)first_chunk, (void*)first_chunk) && 
+                  check_aligned((void*)first_chunk, (void*)prolog_chunk_ftr) && 
+                  check_aligned((void*)first_chunk, (void*)end_of_chunk) && 
+                  check_aligned((void*)first_chunk, (void*)first_block_hdr) && 
+                  check_aligned((void*)first_chunk, (void*)first_block_ftr) ) )
+           DEBUG_PRINT1(("NOT ALIGNED\n"));
+        
+         return 0;
+}
+
+void *mm_malloc(size_t size) {
+  int new_size = ALIGN(size + OVERHEAD);
+  void *bp = first_bp;
+  while (GET_SIZE(HDRP(bp)) != 0) {
+    if (!GET_ALLOC(HDRP(bp)) && (GET_SIZE(HDRP(bp)) >= new_size)) {
+      set_allocated(bp, new_size);
+      return bp; 
+    }
+      bp = NEXT_BLKP(bp);
+  }
+
+  extend(new_size);
+  set_allocated(bp, new_size);
+  return bp;
+}
+
+static void extend(size_t new_size) {
+ size_t chunk_size = CHUNK_ALIGN(new_size);
+ void *bp = mem_map(chunk_size);
+ GET_SIZE(HDRP(bp)) = chunk_size;
+ GET_ALLOC(HDRP(bp)) = 0;
+ GET_SIZE(HDRP(NEXT_BLKP(bp))) = 0;
+ GET_ALLOC(HDRP(NEXT_BLKP(bp))) = 1;
+}
+
+static void set_allocated(void *bp, size_t size) {
+ size_t extra_size = GET_SIZE(HDRP(bp)) - size;
+ if (extra_size > ALIGN(1 + OVERHEAD)) {
+  GET_SIZE(HDRP(bp)) = size;
+  GET_SIZE(HDRP(NEXT_BLKP(bp))) = extra_size;
+  GET_ALLOC(HDRP(NEXT_BLKP(bp))) = 0;
+ }
+ GET_ALLOC(HDRP(bp)) = 1;
+}
+
+/*
+ * Basic mm_free
+ */
+void mm_free(void *bp) {
+ GET_ALLOC(HDRP(bp)) = 0;
+}
+
+
+
+/*
+ * mm_check - Check whether the heap is ok, so that mm_malloc()
+ *            and proper mm_free() calls won't crash.
+ */
+int mm_check()
+{
+  return 1;
+}
+
+/*
+ * mm_check - Check whether freeing the given `p`, which means that
+ *            calling mm_free(p) leaves the heap in an ok state.
+ */
+int mm_can_free(void *p)
+{
+  return 1;
+}
+
+
+static int check_aligned(void* bp, void* other){
+  DEBUG_PRINT1(("PTR: %p, \tSZ: %d\n",bp, GET_SIZE(bp))); 
+  DEBUG_PRINT1(("Offset: %d, \tSZ: %d\n",other - bp, GET_SIZE(other))); 
+  unsigned long ptr = (unsigned long)bp;
+  if(ptr % 16 != 0)
+    return 0;
+  return 1;
+}
