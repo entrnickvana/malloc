@@ -162,6 +162,58 @@ int mm_init() {
          return 0;
 }
 
+static void* set_new_chunk(size_t new_size)
+{
+                                     
+                       
+        
+        //  prolog chunk hdr, two chunk hdrs
+         size_t num_bytes = new_size;
+         chunk_header* first_chunk = mem_map(num_bytes);    
+         int fc_off = first_chunk - first_chunk;
+         GET_CHUNK_SIZE(first_chunk) = BLK_TO_BYT(2);                           
+         GET_CHUNK_ALLOC(first_chunk) = 1;                          
+         chunk_footer* prolog_chunk_ftr = ((char*)first_chunk + (sizeof(chunk_header))); 
+         unsigned long cftr_off = (void*)prolog_chunk_ftr - (void*)first_chunk;
+         
+         // set end of chunk
+         chunk_footer* end_of_chunk = (((char*) first_chunk) +  num_bytes - sizeof(chunk_footer));
+         GET_CHUNK_ALLOC(end_of_chunk) = 1;
+         GET_CHUNK_SIZE(end_of_chunk) = BLK_TO_BYT(0); 
+         unsigned long end_of_chunk_off = (void*)end_of_chunk - (void*)first_chunk;
+
+
+         block_header* first_block_hdr = ((char*)prolog_chunk_ftr + (sizeof(chunk_footer))); 
+         GET_ALLOC(first_block_hdr) = 0;
+         unsigned long f_blk_hdr_off = (void*)first_block_hdr - (void*)first_chunk;
+         setBAC(first_block_hdr, 0);
+
+         size_t first_block_size_bytes = num_bytes - (CHUNK_OVERHEAD);
+         size_t first_block_size_blks = BYT_TO_BLK(first_block_size_bytes);
+         GET_SIZE(first_block_hdr) = first_block_size_bytes;
+        
+         unsigned long size_of_block_in_bytes = GET_SIZE(first_block_hdr);
+         unsigned long first_blk_ftr_offset_est = f_blk_hdr_off + size_of_block_in_bytes - SZ_OF_BLKS;
+         //void* f_blk_ftr_ptr = HDRP(NEXT_BLKP(first_block_hdr));
+         void* f_blk_ftr_ptr = GO_TO_FTR((void*)first_block_hdr + sizeof(block_header));
+         block_header* first_block_ftr = ((void*)first_chunk) + first_blk_ftr_offset_est;
+         unsigned long f_blk_ftr_off = (void*)first_block_ftr - (void*)first_chunk;                  
+         GET_SIZE(first_block_ftr) = GET_SIZE(first_block_hdr);
+         GET_ALLOC(first_block_ftr) = 0;
+
+         char* new_bp = ((void*)first_block_hdr + sizeof(block_header));
+         unsigned long bp_off = (void*)new_bp - (void*)first_chunk;
+
+         if(!  (  check_aligned((void*)first_chunk, (void*)first_chunk) && 
+                  check_aligned((void*)first_chunk, (void*)prolog_chunk_ftr) && 
+                  check_aligned((void*)first_chunk, (void*)end_of_chunk) && 
+                  check_aligned((void*)first_chunk, (void*)first_block_hdr) && 
+                  check_aligned((void*)first_chunk, (void*)first_block_ftr) ) )
+           DEBUG_PRINT1(("NOT ALIGNED\n"));
+        
+         return new_bp;
+}
+
 // Arbitrary comment
 
 
@@ -216,16 +268,15 @@ static void *mm_malloc_dbg(size_t size) {
 
 static void extend(size_t new_size) {
  size_t chunk_size = CHUNK_ALIGN(new_size);
- void *bp = mem_map(chunk_size);
+ char *bp = mem_map(chunk_size);
  GET_SIZE(HDRP(bp)) = chunk_size;
  GET_ALLOC(HDRP(bp)) = 0;
  GET_SIZE(HDRP(NEXT_BLKP(bp))) = 0;
  GET_ALLOC(HDRP(NEXT_BLKP(bp))) = 1;
 }
-
 static void extend_dbg(size_t new_size) {
  size_t chunk_size = CHUNK_ALIGN(new_size);
- void *bp = mem_map(chunk_size);
+ char *bp = set_new_chunk(chunk_size);
  GET_SIZE(HDRP(bp)) = chunk_size;
  GET_ALLOC(HDRP(bp)) = 0;
  GET_SIZE(HDRP(NEXT_BLKP(bp))) = 0;
