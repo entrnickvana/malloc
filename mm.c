@@ -54,9 +54,9 @@ typedef struct{
 }chunk_header;
 
 typedef struct{
-    size_t chunk_size;
-    char chunk_allocated;
-    //chunk_hdr* next_chunk;
+    chunk_header* next_chunk;    
+    char chunk_allocated;    
+    
 }chunk_footer;
 
 /* always use 16-byte alignment */
@@ -72,8 +72,9 @@ typedef struct{
 // MY DECLARATIONS
 #define CHUNK_SIZE (1 << 14)
 #define CHUNK_ALIGN(size) (((size)+(CHUNK_SIZE-1)) & ~(CHUNK_SIZE-1))
-#define GET_CHUNK_SIZE(p) (((chunk_header *)(p))->chunk_size)
+#define GET_CHUNK_SIZE(p) ((chunk_header *)(p))->chunk_size
 #define GET_CHUNK_ALLOC(p) (((chunk_header *)(p))->chunk_allocated)
+#define GET_CHUNK_FTR_PTR(p)  ((chunk_footer*)(p))->next_chunk
 #define CHUNK_OVERHEAD (sizeof(chunk_header) * 3)
 #define GET_SIZE(p) ((block_header *)(p))->size
 #define GET_ALLOC(p) ((block_header *)(p))->allocated
@@ -87,7 +88,7 @@ typedef struct{
 #define GO_TO_FTR(bp) ( HDRP(HDRP(NEXT_BLKP(bp))) )
 #define OVERHEAD (sizeof(block_header) * 2)
 
-static void extend(size_t new_size);
+
 static void set_allocated(void *bp, size_t req_size);
 static int check_aligned(void* bp, void* other);
 static void mark_payload(block_header* p, int hdr_ftr);
@@ -95,8 +96,11 @@ static void setACE(int* ace, int al_unal);
 static void setBAC(int* bac, int al_unal);
 static void *mm_malloc_dbg(size_t size);
 static void set_allocated_dbg(void *bp, size_t req_size_including_overhead);
-static void extend_dbg(size_t new_size);
 static unsigned long calc_offset(void* new_ptr);
+static void* set_new_chunk(size_t new_size);
+static void* extend(size_t new_size);
+static void* extend_dbg(size_t new_size);
+static char* print_block_info(void* bp);
 
 
 void *current_avail = NULL;
@@ -104,11 +108,20 @@ int current_avail_size = 0;
 void *first_bp;
 int debug_on = 1;
 void* first_allocation_ptr;
+int block_count = 0;
+int allocated_block_count = 0;
+int unalloc_block_count = 0;
+int chunk_count = 0;
+int num_calls = 0;
+int malloc_req = 1;
+
+
 /* 
  * mm_init - initialize the malloc package.
  */
 int mm_init() {
-        
+          //printf("\nsizeof chunk_ftr = %d\n\n", sizeof(chunk_footer));
+         printf("\n\n");  
          size_t initial_num_pages = 4;                              
          size_t num_aligned_pages_in_bytes = PAGE_ALIGN(initial_num_pages);  
          size_t num_bytes = num_aligned_pages_in_bytes;    
@@ -119,12 +132,12 @@ int mm_init() {
          int fc_off = first_chunk - first_chunk;
          GET_CHUNK_SIZE(first_chunk) = BLK_TO_BYT(2);                           
          GET_CHUNK_ALLOC(first_chunk) = 1;                          
-         chunk_footer* prolog_chunk_ftr = ((char*)first_chunk + (sizeof(chunk_header))); 
+         chunk_header* prolog_chunk_ftr = ((char*)first_chunk + (sizeof(chunk_header))); 
          unsigned long cftr_off = (void*)prolog_chunk_ftr - (void*)first_chunk;
          
          // set end of chunk
          chunk_footer* end_of_chunk = (((char*) first_chunk) +  num_bytes - sizeof(chunk_footer));
-         GET_CHUNK_ALLOC(end_of_chunk) = 1;
+         GET_CHUNK_FTR_PTR(end_of_chunk) = NULL;
          GET_CHUNK_SIZE(end_of_chunk) = BLK_TO_BYT(0); 
          unsigned long end_of_chunk_off = (void*)end_of_chunk - (void*)first_chunk;
 
@@ -151,6 +164,9 @@ int mm_init() {
          first_bp = ((void*)first_block_hdr + sizeof(block_header));
          first_allocation_ptr = first_chunk;
          unsigned long bp_off = (void*)first_bp - (void*)first_chunk;
+         block_count++;
+         unalloc_block_count++;
+         chunk_count++;
 
          if(!  (  check_aligned((void*)first_chunk, (void*)first_chunk) && 
                   check_aligned((void*)first_chunk, (void*)prolog_chunk_ftr) && 
@@ -158,14 +174,14 @@ int mm_init() {
                   check_aligned((void*)first_chunk, (void*)first_block_hdr) && 
                   check_aligned((void*)first_chunk, (void*)first_block_ftr) ) )
            DEBUG_PRINT1(("NOT ALIGNED\n"));
-        
+
+         print_block_info(first_bp);
+          
          return 0;
 }
 
 static void* set_new_chunk(size_t new_size)
 {
-                                     
-                       
         
         //  prolog chunk hdr, two chunk hdrs
          size_t num_bytes = new_size;
@@ -173,12 +189,12 @@ static void* set_new_chunk(size_t new_size)
          int fc_off = first_chunk - first_chunk;
          GET_CHUNK_SIZE(first_chunk) = BLK_TO_BYT(2);                           
          GET_CHUNK_ALLOC(first_chunk) = 1;                          
-         chunk_footer* prolog_chunk_ftr = ((char*)first_chunk + (sizeof(chunk_header))); 
+         chunk_header* prolog_chunk_ftr = ((char*)first_chunk + (sizeof(chunk_header))); 
          unsigned long cftr_off = (void*)prolog_chunk_ftr - (void*)first_chunk;
          
          // set end of chunk
          chunk_footer* end_of_chunk = (((char*) first_chunk) +  num_bytes - sizeof(chunk_footer));
-         GET_CHUNK_ALLOC(end_of_chunk) = 1;
+         GET_CHUNK_FTR_PTR(end_of_chunk) = NULL ;
          GET_CHUNK_SIZE(end_of_chunk) = BLK_TO_BYT(0); 
          unsigned long end_of_chunk_off = (void*)end_of_chunk - (void*)first_chunk;
 
@@ -210,8 +226,14 @@ static void* set_new_chunk(size_t new_size)
                   check_aligned((void*)first_chunk, (void*)first_block_hdr) && 
                   check_aligned((void*)first_chunk, (void*)first_block_ftr) ) )
            DEBUG_PRINT1(("NOT ALIGNED\n"));
-        
+         unalloc_block_count++;
+         block_count++;
+         chunk_count++;
+         num_calls++;
+
+         print_block_info(first_bp);         
          return new_bp;
+
 }
 
 // Arbitrary comment
@@ -233,16 +255,42 @@ void *mm_malloc(size_t size) {
 
   extend(new_size);
   set_allocated(bp, new_size);
+         num_calls++;  
   return bp;
 }
 
+static char* print_block_info(void* bp)
+{
+  if(!debug_on)
+  return;
+  
+  printf("////////////////////////////////////////////////////////////////////////////////\n\n");
 
+  int i = 1;
+  char in;
+
+  while (GET_SIZE(HDRP(bp)) != 0) {
+      printf("BLOCK HDR:\t ptr:%p\t\t\toff: %lu\t\t\t\tsize: %d\t\t\talloc: %d\t\t\tNUMBER IN CHUNK: %d\n", HDRP(bp), calc_offset(HDRP(bp)),GET_SIZE(HDRP(bp)), GET_ALLOC(HDRP(bp)), i);
+      block_header* ftr = GO_TO_FTR(bp);
+
+      printf("BLOCK FTR:\t ptr:%p\t\t\toff: %lu\t\t\tsize: %d\t\t\talloc: %d\t\t\tNUMBER IN CHUNK: %d\n", ftr, calc_offset(ftr),GET_SIZE(ftr), GET_ALLOC(ftr), i++);
+
+      printf("DIST IN BYTES HDR -> FTR: %d\n\n\n", calc_offset(ftr) - calc_offset(HDRP(bp)) );
+
+      bp = NEXT_BLKP(bp);
+  }
+
+  scanf("%c",&in);
+
+}
 
 /*
   ///////////// DEBUG ONLY ///////////////////////
 */
 
-static void *mm_malloc_dbg(size_t size) {
+static void* mm_malloc_dbg(size_t size) {
+
+  printf("Malloc REQ: %d\t\t\t FOR SIZE: %d\n", malloc_req++, size);
   int new_size = ALIGN(size + OVERHEAD);
   void *bp = first_bp;
   while (GET_SIZE(HDRP(bp)) != 0) {
@@ -254,38 +302,49 @@ static void *mm_malloc_dbg(size_t size) {
     if (!GET_ALLOC(HDRP(bp)) && (GET_SIZE(HDRP(bp)) >= new_size)) {
 
       set_allocated_dbg(bp, new_size);
+      num_calls++;        
       return bp; 
     }
       bp = NEXT_BLKP(bp);
   }
 
-  extend_dbg(new_size);
-  set_allocated_dbg(bp, new_size);
-  return bp;
+  chunk_footer* chk_ftr = (void*)bp - sizeof(chunk_footer);
+  void* new_bp = extend_dbg(new_size);
+  GET_CHUNK_FTR_PTR((chk_ftr)) = new_bp;
+  set_allocated_dbg(new_bp, new_size);
+  num_calls++;    
+  print_block_info(first_bp);  
+  return new_bp;
 }
-
+ //arb arb
 /////////////// DEBUG ONLY  /////////////////////////
 
-static void extend(size_t new_size) {
- size_t chunk_size = CHUNK_ALIGN(new_size);
- char *bp = mem_map(chunk_size);
- GET_SIZE(HDRP(bp)) = chunk_size;
- GET_ALLOC(HDRP(bp)) = 0;
- GET_SIZE(HDRP(NEXT_BLKP(bp))) = 0;
- GET_ALLOC(HDRP(NEXT_BLKP(bp))) = 1;
-}
-static void extend_dbg(size_t new_size) {
+static void* extend(size_t new_size) {
  size_t chunk_size = CHUNK_ALIGN(new_size);
  char *bp = set_new_chunk(chunk_size);
- GET_SIZE(HDRP(bp)) = chunk_size;
- GET_ALLOC(HDRP(bp)) = 0;
- GET_SIZE(HDRP(NEXT_BLKP(bp))) = 0;
- GET_ALLOC(HDRP(NEXT_BLKP(bp))) = 1;
+ //GET_SIZE(HDRP(bp)) = chunk_size;
+ //GET_ALLOC(HDRP(bp)) = 0;
+ //GET_SIZE(HDRP(NEXT_BLKP(bp))) = 0;
+ //GET_ALLOC(HDRP(NEXT_BLKP(bp))) = 1;
+ num_calls++;   
+ chunk_count++; 
+ return bp;
+}
+
+static void* extend_dbg(size_t new_size) {
+ size_t chunk_size = CHUNK_ALIGN(new_size);
+ char *bp = set_new_chunk(chunk_size);
+ num_calls++;   
+ chunk_count++;
+ return bp;
 }
 
 static void set_allocated_dbg(void *bp, size_t req_size_including_overhead) {
  size_t extra_size = GET_SIZE(HDRP(bp)) - req_size_including_overhead;
+ printf("SETTING ALLOC OF SIZE: %d\t\t\t EXTRA SIZE: %d\n", req_size_including_overhead, extra_size);  
  if (extra_size > ALIGN(1 + OVERHEAD)) {
+
+  printf("SPLITTING BLOCK\n");
   unsigned long new_blk_ftr_off = (void*)GO_TO_FTR(bp) - (void*)bp; // DEBUG ONLY
   GET_SIZE(HDRP(bp)) = req_size_including_overhead; // SET HDR
   GET_SIZE(GO_TO_FTR(bp)) = req_size_including_overhead; // SET FTR
@@ -304,13 +363,21 @@ static void set_allocated_dbg(void *bp, size_t req_size_including_overhead) {
   GET_ALLOC(HDRP(unalloc_bp)) = 0;
   GET_ALLOC(GO_TO_FTR(unalloc_bp)) = 0; // SET FTR
   //DEBUG_MARK((void*)unalloc_bp,0);
+  print_block_info(first_bp);
+  unalloc_block_count++;
  }
+ allocated_block_count++;
+ num_calls++;   
  GET_ALLOC(HDRP(bp)) = 1;
  GET_ALLOC(GO_TO_FTR(bp)) = 1;
+
+ print_block_info(first_bp);
 }
 
 static void set_allocated(void *bp, size_t req_size_including_overhead) {
+
  size_t extra_size = GET_SIZE(HDRP(bp)) - req_size_including_overhead;
+ printf("SETTING ALLOC OF SIZE: %d\t\t\t EXTRA SIZE: %d\n", req_size_including_overhead, extra_size); 
  if (extra_size > ALIGN(1 + OVERHEAD)) {
   unsigned long new_blk_ftr_off = (void*)GO_TO_FTR(bp) - (void*)bp; // DEBUG ONLY
   GET_SIZE(HDRP(bp)) = req_size_including_overhead; // SET HDR
@@ -329,6 +396,7 @@ static void set_allocated(void *bp, size_t req_size_including_overhead) {
  }
  GET_ALLOC(HDRP(bp)) = 1;
  GET_ALLOC(GO_TO_FTR(bp)) = 1;
+ num_calls++;   
 }
 
 
@@ -337,7 +405,11 @@ static void set_allocated(void *bp, size_t req_size_including_overhead) {
  * Basic mm_free
  */
 void mm_free(void *bp) {
+
  GET_ALLOC(HDRP(bp)) = 0;
+ GET_ALLOC(GO_TO_FTR(bp)) = 0;
+ allocated_block_count--; 
+ print_block_info(first_bp); 
 }
 
 static unsigned long calc_offset(void* new_ptr)
